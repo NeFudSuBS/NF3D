@@ -1,0 +1,20 @@
+# PyInstaller build artefacts
+build/
+dist/
+
+# Installer output (distributed separately as a Release asset)
+installer_output/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# NF3D runtime files
+.setup_ok
+nf3d_config.json
+nf3d_user_dictionary.json
+
+# OS noise
+Thumbs.db
+.DS_Store
