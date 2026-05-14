@@ -41,12 +41,17 @@ from nf3d_core import (
 )
 
 from PIL import Image, ImageDraw, ImageFont, ImageTk
+from logging_config import get_logger
+from config import PROJECT_VERSION, ASS_NL, RegexPatterns
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Window icon — NF3D logo embedded as base64 ICO
 # ─────────────────────────────────────────────────────────────────────────────
 
 _NF3D_ICON_B64 = """AAABAAEAEBAAAAAAIABlAgAAFgAAAIlQTkcNChoKAAAADUlIRFIAAAAQAAAAEAgGAAAAH/P/YQAAAixJREFUeJy1k01IVFEUx3/nvueMOVqj0YcTQ2pYBBaYm4JABtq1cApGaJMEbUJq4SLaDbNtEdGmCAkCIdKFbYp2VpCLyFxlVGhQQvZhjo3O13vvnhaOMdZEEPTf3Hvu4Zwf5+MKNaTgABZgih63h0Zdu69IjilNgF8rbj3Y/NFZQ/IrWSD44OxJxIPZR2+Id+yW8JksQcSCRDCSE53dZeeuKYiAutVkgWDedAxssTK8IB13imKfl6097hm9ahHHgGPRAoABrZw/yXbeaU/Vq1z+qnJQoFyvcumzo0/CmNYopnUBzcXtuxEF0Qq4Um+vADiBJD3V4Xbevtqhc2cNMrnJSnces+zDd3Xrggl63aqq2WAIWiqL62BVcBzNY+5FrD8Y07nrAJQBXgMq6+3bkMBHPsV1JaHSdAsiDTlyxRfb9i3WnX/80Fn1JCjmrZddPMVtyaIqiGjVFFSGt/Y13j2cPJmLbG6Leyttnlfsvn/k2APrhnuDpeUBY+uS6kpCrX+a8P4lMlQlSKshI5YLMydoiHYRadhLKCiZb1/eq+cf0itdSdITrgl3fjSlQp+f6ZwkrUbW6SBqzk1flGhzVNxCXlq278QrHPBzq1M0NqcI+eOE6o9KqXjDDsVukhp1GOsPKj1Ym4p13KeOSIu6IdRxp4Ps5BCNsbDbHB/XcqFJQnbEH4w9q9Qf/HVNayqtG1ZdfnPOjK29pVLQv/ahGMXAGLxMKRmx/0b+X/oBf9nnQpFhegAAAAAASUVORK5CYII="""
+
+logger = get_logger(__name__)
+
 
 def _set_window_icon(root):
     """Set the NF3D logo as the window icon (title bar + taskbar)."""
@@ -62,8 +67,8 @@ def _set_window_icon(root):
         with open(ico_path, "wb") as _f:
             _f.write(ico_data)
         root.iconbitmap(ico_path)
-    except Exception:
-        pass   # fall back to default icon silently
+    except OSError:
+        logger.warning("_set_window_icon: could not set window icon, using default")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -100,7 +105,7 @@ DEPTH_DEFAULTS = dict(
 def load_config() -> dict:
     if CONFIG_PATH.exists():
         try: return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        except Exception: pass
+        except (OSError, json.JSONDecodeError): logger.warning("load_config: could not read config, using defaults")
     return {}
 
 def save_config(cfg: dict) -> None:
@@ -125,8 +130,8 @@ def register_bundled_fonts() -> None:
             gdi32.AddFontResourceExW(str(font_file), FR_PRIVATE, None)
         for font_file in FONTS_DIR.glob("*.otf"):
             gdi32.AddFontResourceExW(str(font_file), FR_PRIVATE, None)
-    except Exception:
-        pass  # Non-Windows or GDI32 unavailable — PIL can still load directly
+    except OSError:
+        logger.warning("register_bundled_fonts: GDI32 unavailable or non-Windows, PIL will load fonts directly")
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Tool detection
@@ -142,7 +147,7 @@ def _detect(cands: list) -> str:
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     **_popen_kwargs())
                 if p.returncode == 0: return c
-        except Exception: pass
+        except (OSError, subprocess.SubprocessError): pass
     return ""
 
 def autodetect_tools() -> dict:
@@ -207,7 +212,7 @@ def ass_to_rgb(c: str, fallback=(230, 230, 230)) -> tuple:
     try:
         s = c.strip().upper().lstrip("&H").zfill(8)
         return (int(s[6:8], 16), int(s[4:6], 16), int(s[2:4], 16))
-    except Exception: return fallback
+    except (ValueError, AttributeError): return fallback
 
 def rgb_to_ass(r: int, g: int, b: int) -> str:
     return f"&H00{b:02X}{g:02X}{r:02X}"
@@ -283,7 +288,7 @@ def load_pil_font(name: str, size: int, italic: bool = False) -> ImageFont.FreeT
     path = find_font_file(name, italic)
     if path:
         try: return ImageFont.truetype(path, size=size)
-        except Exception: pass
+        except (OSError, IOError): logger.warning("load_pil_font: truetype(%s) failed, trying arial.ttf", path)
     try: return ImageFont.truetype("arial.ttf", size=size)
     except: return ImageFont.load_default()
 
@@ -421,7 +426,7 @@ def make_swatch(canvas: tk.Canvas, ass_colour: str) -> None:
     try:
         r, g, b = ass_to_rgb(ass_colour)
         canvas.configure(bg=f"#{r:02x}{g:02x}{b:02x}")
-    except Exception:
+    except (ValueError, tk.TclError):
         canvas.configure(bg="#888888")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -530,8 +535,8 @@ def _vorhees_subdir(sub: str) -> Path:
             p = Path(ws) / "Vorhees" / sub
             p.mkdir(parents=True, exist_ok=True)
             return p
-    except Exception:
-        pass
+    except OSError:
+        logger.warning("_vorhees_subdir: workspace path error, falling back to home dir")
     fb = Path.home() / "NF3D" / "Vorhees" / sub
     fb.mkdir(parents=True, exist_ok=True)
     return fb
@@ -551,8 +556,8 @@ def load_colour_palette() -> list:
             data = _j.loads(p.read_text(encoding="utf-8"))
             if isinstance(data, list):
                 return [str(c) for c in data][:_MAX_RECENT]
-    except Exception:
-        pass
+    except (OSError, json.JSONDecodeError):
+        logger.warning("load_colour_palette: could not read palette file")
     return []
 
 
@@ -563,8 +568,8 @@ def save_colour_palette(colours: list) -> None:
         p = _palette_path()
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(_j.dumps(colours, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    except OSError:
+        logger.warning("save_colour_palette: could not write palette file")
 
 
 class ColourPickerDialog(tk.Toplevel):
@@ -591,7 +596,7 @@ class ColourPickerDialog(tk.Toplevel):
         # Parse initial colour
         try:
             self._r, self._g, self._b = ass_to_rgb(ass_var.get())
-        except Exception:
+        except (ValueError, AttributeError):
             self._r, self._g, self._b = 230, 230, 230
 
         self._build()
@@ -665,7 +670,7 @@ class ColourPickerDialog(tk.Toplevel):
             self._r = max(0, min(255, int(self._rv.get())))
             self._g = max(0, min(255, int(self._gv.get())))
             self._b = max(0, min(255, int(self._bv.get())))
-        except Exception:
+        except (ValueError, tk.TclError):
             return
         self._update_from_rgb()
 
@@ -674,7 +679,7 @@ class ColourPickerDialog(tk.Toplevel):
         hex_col = f"#{self._r:02x}{self._g:02x}{self._b:02x}"
         self._hex_var.set(hex_col[1:].upper())
         try: self._swatch.configure(bg=hex_col)
-        except Exception: pass
+        except tk.TclError: logger.warning("_update_from_rgb: could not set swatch colour %s", hex_col)
 
     def _on_hex_entry(self):
         raw = self._hex_var.get().strip().lstrip("#")
@@ -698,8 +703,8 @@ class ColourPickerDialog(tk.Toplevel):
         try:
             self._r, self._g, self._b = ass_to_rgb(ass_col)
             self._update_from_rgb()
-        except Exception:
-            pass
+        except (ValueError, AttributeError):
+            logger.warning("_apply_ass: could not parse ASS colour %s", ass_col)
 
     def _rebuild_palette_swatches(self):
         """Rebuild the swatch grid from the current _RECENT_COLOURS list."""
@@ -711,7 +716,7 @@ class ColourPickerDialog(tk.Toplevel):
                 rr, gg, bb = ass_to_rgb(ass_col)
                 hex_col = f"#{rr:02x}{gg:02x}{bb:02x}"
                 label   = f"#{rr:02X}{gg:02X}{bb:02X}"
-            except Exception:
+            except (ValueError, AttributeError):
                 hex_col = "#888888"; label = "?"
             cv = tk.Canvas(self._pal_frame, width=24, height=24,
                            bg=hex_col, cursor="hand2",
@@ -741,7 +746,7 @@ class ColourPickerDialog(tk.Toplevel):
             nonlocal tip
             if tip:
                 try: tip.destroy()
-                except Exception: pass
+                except tk.TclError: pass
                 tip = None
         widget.bind("<Enter>", enter, add="+")
         widget.bind("<Leave>", leave, add="+")
@@ -815,17 +820,17 @@ def tip(widget, text: str, delay_ms: int = 600):
         _state["y"] = e.y_root
         if _state["after"]:
             try: widget.after_cancel(_state["after"])
-            except Exception: pass
+            except tk.TclError: pass
         _state["after"] = widget.after(delay_ms, _show)
 
     def _leave(e=None):
         if _state["after"]:
             try: widget.after_cancel(_state["after"])
-            except Exception: pass
+            except tk.TclError: pass
             _state["after"] = None
         if _state["tip"]:
             try: _state["tip"].destroy()
-            except Exception: pass
+            except tk.TclError: pass
             _state["tip"] = None
 
     widget.bind("<Enter>",  _enter, add="+")
@@ -1013,8 +1018,8 @@ class IssueReviewWindow(tk.Toplevel):
         try:
             for w in self._scan_buttons:
                 w.configure(state=state)
-        except Exception:
-            pass
+        except tk.TclError:
+            logger.warning("_set_scanning: widget configure failed")
         if scanning:
             self.var_status.set("Scanning…")
 
@@ -1025,7 +1030,7 @@ class IssueReviewWindow(tk.Toplevel):
         """
         try:
             self.after(0, lambda: self._set_scanning(True))
-        except Exception:
+        except tk.TclError:
             return
         flagged = []
         error_msg = ""
@@ -1041,13 +1046,13 @@ class IssueReviewWindow(tk.Toplevel):
                     try:
                         self.after(0, lambda d=n_done, t=total:
                             self.var_status.set(f"Scanning {d}/{t}…"))
-                    except Exception:
+                    except tk.TclError:
                         pass
         except Exception as exc:
             error_msg = str(exc)
         try:
             self.after(0, lambda: self._finish_scan(flagged, error_msg))
-        except Exception:
+        except tk.TclError:
             pass
 
     def _finish_scan(self, flagged: list, error_msg: str = ""):
@@ -1175,8 +1180,8 @@ class IssueReviewWindow(tk.Toplevel):
                         self.issue_listbox.delete(sel[0])
                         self.issue_listbox.insert(sel[0], f"  {issue}")
                         self.issue_listbox.selection_set(sel[0])
-            except Exception:
-                pass
+            except (ImportError, AttributeError):
+                logger.warning("_resolve_suggestion: could not get spelling suggestion for %s", issue.original)
         has_sugg = bool(issue.suggestion and
                         issue.suggestion.lower() != issue.original.lower())
         self.btn_accept.config(state="normal" if has_sugg else "disabled")
@@ -1247,7 +1252,7 @@ class IssueReviewWindow(tk.Toplevel):
         try:
             sel = self.editor.selection_get().strip()
             if sel: return sel
-        except Exception:
+        except tk.TclError:
             pass
         return ""
 
@@ -1256,8 +1261,8 @@ class IssueReviewWindow(tk.Toplevel):
         try:
             from nf3d_core import spellchecker_add_words
             spellchecker_add_words([word])
-        except Exception:
-            pass
+        except (ImportError, AttributeError):
+            logger.warning("_add_to_checker: could not add word to spellchecker")
         if hasattr(self, "_combined_dict"):
             self._combined_dict.add(word)
         else:
@@ -1514,8 +1519,8 @@ class IssueReviewWindow(tk.Toplevel):
                     img = Image.open(raw_png).convert("RGB")
                     self._show_frame_window(raw_png, ev, img, source="PGS source image")
                     return
-                except Exception:
-                    pass
+                except OSError:
+                    logger.warning("_view_source_frame: could not open debug PNG %s", raw_png)
             messagebox.showwarning("No video / ffmpeg",
                 "Load an MKV file on the Convert tab and ensure ffmpeg is set.\n"
                 "The frame viewer needs the source video."); return
@@ -1546,8 +1551,8 @@ class IssueReviewWindow(tk.Toplevel):
                     self.after(0, lambda i=img: self._show_frame_window(
                         raw_png, ev, i, source="PGS source image"))
                     return
-                except Exception:
-                    pass
+                except OSError:
+                    logger.warning("_extract: could not open debug PNG %s", raw_png)
             # Try 3: clean video frame
             pr_cl = subprocess.run(
                 [ffmpeg, "-y",
@@ -1624,6 +1629,7 @@ class App(tk.Tk):
 
     def __init__(self):
         super().__init__()
+        logger.info("App.__init__: starting NF3D GUI")
         self.title("NF3D — 3D subtitle converter")
         _set_window_icon(self)
         try:
@@ -1631,7 +1637,7 @@ class App(tk.Tk):
         except tk.TclError:
             try:
                 self.attributes("-zoomed", True)   # Linux
-            except Exception:
+            except tk.TclError:
                 pass                    # macOS — geometry already set below
         self.geometry("1340x900")
         self.minsize(1000, 700)
@@ -1765,18 +1771,18 @@ class App(tk.Tk):
     @staticmethod
     def _safe_int(var, default: int) -> int:
         try: return int(var.get())
-        except Exception: return default
+        except (ValueError, tk.TclError): return default
 
     @staticmethod
     def _safe_float(var, default: float) -> float:
         try: return float(var.get())
-        except Exception: return default
+        except (ValueError, tk.TclError): return default
 
     def _ws_dir(self) -> str:
         """Return the workspace directory, creating it if needed."""
         ws = self.var_workspace.get().strip() or str(Path.home() / "NF3D")
         try: os.makedirs(ws, exist_ok=True)
-        except Exception: pass
+        except OSError: logger.warning("_ws_dir: could not create workspace directory %s", ws)
         return ws
 
     def _vorhees(self, sub: str) -> str:
@@ -1789,7 +1795,7 @@ class App(tk.Tk):
         ws = self.var_workspace.get().strip() or str(Path.home() / "NF3D")
         p  = Path(ws) / "Vorhees" / sub
         try: p.mkdir(parents=True, exist_ok=True)
-        except Exception: pass
+        except OSError: logger.warning("_vorhees: could not create directory %s", p)
         return str(p)
 
     def _globals(self) -> dict:
@@ -2261,7 +2267,8 @@ class App(tk.Tk):
                 _logo_img = _Img.open(str(_logo_path)).convert("RGBA")
                 self._logo_imgtk = _ITk.PhotoImage(_logo_img)
                 ttk.Label(logo_frame, image=self._logo_imgtk).pack()
-        except Exception:
+        except (OSError, Exception):
+            logger.warning("_build_convert_tab: could not load NF3D logo PNG, using text fallback")
             ttk.Label(logo_frame, text="NF3D", font=("Arial", 18, "bold"),
                       foreground="#1a3a6a").pack()
 
@@ -2301,7 +2308,7 @@ class App(tk.Tk):
         cv = self._step_indicators.get(key)
         if cv:
             try: cv.itemconfig("dot", fill=colour)
-            except Exception: pass
+            except tk.TclError: pass
         lv = self._step_labels.get(key)
         if lv:
             base = self._STEP_BASE_LABELS.get(key, key)
@@ -2309,7 +2316,7 @@ class App(tk.Tk):
         # Also clear the main status text when resetting to idle
         if state == "idle" and key == "file":
             try: self.lbl_status.config(text="Open a file to begin.")
-            except Exception: pass
+            except tk.TclError: pass
 
     def _section(self, parent, title: str, row: int):
         """Draw a thin section separator with label."""
@@ -2560,7 +2567,7 @@ class App(tk.Tk):
             # Cancel previous pending render and wait 120ms for user to stop dragging
             if self._preview_debounce_id:
                 try: self.after_cancel(self._preview_debounce_id)
-                except Exception: pass
+                except tk.TclError: pass
             self._preview_debounce_id = self.after(
                 120, lambda: (self._render_preview(), self._render_fullscreen()))
 
@@ -3143,7 +3150,7 @@ class App(tk.Tk):
             try:
                 self.ass_listbox.selection_set(sel)
                 self.ass_listbox.see(sel)
-            except Exception:
+            except tk.TclError:
                 pass
 
     def _reselect_ass(self):
@@ -3151,7 +3158,7 @@ class App(tk.Tk):
         try:
             self.ass_listbox.selection_clear(0, "end")
             self.ass_listbox.selection_set(self._ass_sel_idx)
-        except Exception: pass
+        except tk.TclError: pass
 
     def _current_ass_cue(self):
         if self._ass_sel_idx is None: return None
@@ -3373,6 +3380,32 @@ class App(tk.Tk):
         # when the user navigates away and comes back to this cue
         cue['style_overrides'] = self._collect_style_overrides()
 
+        # Mirror every edit into self.project.overrides so that
+        # convert_to_stereo_ass (Run / Express) picks them up if the user
+        # re-runs the full conversion after editing individual cues.
+        so = cue['style_overrides']
+        em = cue['emerge_overrides']
+        ov = CueOverride(
+            depth               = depth,
+            x_pct               = self._ae_x_pct.get(),
+            y_pct               = self._ae_y_pct.get(),
+            primary_colour      = so.get('primary_colour'),
+            outline_colour      = so.get('outline_colour'),
+            back_colour         = so.get('back_colour'),
+            font                = so.get('font'),
+            font_size           = so.get('font_size'),
+            bold                = so.get('bold'),
+            outline             = so.get('outline'),
+            shadow              = so.get('shadow'),
+            raw_ass_tags        = so.get('raw_ass_tags'),
+            emerge_in_ms        = em['emerge_in_ms']       if em.get('emerge_in_ms',       -1) >= 0 else None,
+            emerge_out_ms       = em['emerge_out_ms']      if em.get('emerge_out_ms',      -1) >= 0 else None,
+            start_opacity       = em['start_opacity']      if em.get('start_opacity',      -1) >= 0 else None,
+            entry_motion_ms     = em['entry_motion_ms']    if em.get('entry_motion_ms',    -1) >= 0 else None,
+            entry_depth_offset  = em['entry_depth_offset'] if em.get('entry_depth_offset', -1) >= 0 else None,
+        )
+        self.project.set_override(cue['index'], ov)
+
         self._ass_edited_session.add(cue['index'])
         self.lbl_ass_status.config(text="Applied ✓ (unsaved)")
         self._refresh_ass_list()
@@ -3527,7 +3560,8 @@ class App(tk.Tk):
             s, cs = rest.split('.')
             ms = int(cs) * 10
             ts = f"{int(h):02d}:{int(m):02d}:{int(s):02d}.{ms:03d}"
-        except Exception:
+        except (ValueError, IndexError):
+            logger.warning("_ass_extract_frame: could not parse ASS timestamp %s, using raw", ts_ass)
             ts = ts_ass
 
         td  = Path(tempfile.gettempdir()) / "nf3d_preview"; td.mkdir(parents=True, exist_ok=True)
@@ -3827,6 +3861,9 @@ class App(tk.Tk):
 
         # Clear stored override so the cue shows clean on next load
         cue.pop('style_overrides', None)
+        # Also clear the project override so that re-running the conversion
+        # returns this cue to auto-computed depth rather than stale values.
+        self.project.clear_override(cue['index'])
 
         self.lbl_ass_status.config(text="Reset to original (not yet applied)")
         self._render_ass_preview()
@@ -3964,8 +4001,8 @@ class App(tk.Tk):
         try:
             from nf3d_core import _get_spellchecker
             _get_spellchecker()
-        except Exception:
-            pass
+        except (ImportError, Exception):
+            logger.warning("_warmup_spellchecker: could not pre-warm spellchecker")
 
     # ─── Advanced tab ─────────────────────────────────────────────────────────
 
@@ -4294,8 +4331,8 @@ class App(tk.Tk):
                 self._render_preview()
                 self._log("Style preview: auto-extracted frame at 25% of duration.")
             self.after(0, _apply)
-        except Exception:
-            pass
+        except (OSError, subprocess.SubprocessError):
+            logger.warning("_auto_extract_style_frame: could not extract or open frame")
 
     def _on_hsbs_toggle(self):
         """Adjust eye_w when the HSBS checkbox is toggled manually."""
@@ -4314,7 +4351,7 @@ class App(tk.Tk):
 
     def _pick_colour(self, var):
         try: r, g, b = ass_to_rgb(var.get()); init = f"#{r:02x}{g:02x}{b:02x}"
-        except Exception: init = "#e6e6e6"
+        except (ValueError, AttributeError): init = "#e6e6e6"
         rgb, _ = colorchooser.askcolor(color=init)
         if rgb:
             var.set(rgb_to_ass(int(rgb[0]), int(rgb[1]), int(rgb[2])))
@@ -4507,7 +4544,7 @@ class App(tk.Tk):
         self._log("This may take 1–5 minutes for a feature-length movie. Please wait…")
         try:
             self.after(0, lambda: self.lbl_status.config(text="OCR in progress…"))
-        except Exception:
+        except tk.TclError:
             pass
 
         warned          = False
@@ -4525,7 +4562,7 @@ class App(tk.Tk):
                 try:
                     self.after(0, lambda e=elapsed: self.lbl_status.config(
                         text=f"OCR in progress… {e:.0f}s"))
-                except Exception:
+                except tk.TclError:
                     pass
                 last_progress = now
             if not warned and elapsed > 20:
@@ -4546,7 +4583,7 @@ class App(tk.Tk):
         self._log(f"Subtitle Edit finished after {total:.0f}s.")
         try:
             self.after(0, lambda: self.lbl_status.config(text="OCR complete — verifying…"))
-        except Exception:
+        except tk.TclError:
             pass
         return rc
 
@@ -5266,7 +5303,7 @@ class App(tk.Tk):
                 muxed = self._mux(str(ass_out))
                 if mode == "MKV" and ass_out.is_file():
                     try: os.remove(str(ass_out))
-                    except Exception: pass
+                    except OSError: logger.warning("_express: could not remove temp ASS %s", ass_out)
 
             parts = []
             if mode in ("ASS", "BOTH") and ass_out.is_file():
@@ -5334,7 +5371,7 @@ class App(tk.Tk):
                 muxed = self._mux(str(ass_out))
                 if mode == "MKV" and ass_out.is_file():
                     try: os.remove(str(ass_out))
-                    except Exception: pass
+                    except OSError: logger.warning("_run: could not remove temp ASS %s", ass_out)
 
             parts = []
             if mode in ("ASS","BOTH") and ass_out.is_file(): parts.append(f"ASS: {ass_out}")
@@ -5353,7 +5390,8 @@ class App(tk.Tk):
         font_names = set()
         try:
             text = Path(ass_path).read_text(encoding='utf-8-sig', errors='replace')
-        except Exception:
+        except OSError:
+            logger.warning("_collect_ass_fonts: could not read ASS file %s", ass_path)
             return []
         # Style: column 2 is the font name
         for m in _re.finditer(r'^Style:[^,]+,([^,]+),', text, _re.MULTILINE):

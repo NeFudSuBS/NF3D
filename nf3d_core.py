@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 nf3d_core.py — NF3D core library (v3)
@@ -16,10 +16,14 @@ import sys
 import tempfile
 import unicodedata
 
-
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from logging_config import get_logger
+from config import PROJECT_VERSION, ASS_NL, RegexPatterns
+
+logger = get_logger(__name__)
 
 
 def _popen_kwargs():
@@ -31,26 +35,22 @@ def _popen_kwargs():
     return {"creationflags": subprocess.CREATE_NO_WINDOW, "startupinfo": si}
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Constants
+# Constants — PROJECT_VERSION, ASS_NL imported from config.py
 # ─────────────────────────────────────────────────────────────────────────────
 
-ASS_NL = "\\N"
-PROJECT_VERSION = 3
-
-SRT_TIME_RE = re.compile(
-    r"^\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})\s*-->\s*(\d{2}):(\d{2}):(\d{2}),(\d{3})(?:.*)?$"
-)
-ITALIC_OPEN_RE  = re.compile(r"(?i)<\s*i\s*>")
-ITALIC_CLOSE_RE = re.compile(r"(?i)<\s*/\s*i\s*>")
-BOLD_OPEN_RE    = re.compile(r"(?i)<\s*b\s*>")
-BOLD_CLOSE_RE   = re.compile(r"(?i)<\s*/\s*b\s*>")
-UNDER_OPEN_RE   = re.compile(r"(?i)<\s*u\s*>")
-UNDER_CLOSE_RE  = re.compile(r"(?i)<\s*/\s*u\s*>")
-ANY_TAG_RE      = re.compile(r"(?is)<[^>]+>")
-# Matches whole words including contractions with either straight (')
-# or curly (’) apostrophes: didn't, didn’t, we'll, we’ll, I've, I’ve.
-# Minimum 2 chars before or after the apostrophe is enforced by context.
-WORD_TOKEN_RE   = re.compile(r"[A-Za-z]+(?:['‘’][A-Za-z]+)*")
+# Aliases for pre-compiled patterns from config.RegexPatterns.
+# Keeping the _RE suffix so nothing else in the file needs renaming.
+SRT_TIME_RE     = RegexPatterns.SRT_TIME
+ITALIC_OPEN_RE  = RegexPatterns.ITALIC_OPEN
+ITALIC_CLOSE_RE = RegexPatterns.ITALIC_CLOSE
+BOLD_OPEN_RE    = RegexPatterns.BOLD_OPEN
+BOLD_CLOSE_RE   = RegexPatterns.BOLD_CLOSE
+UNDER_OPEN_RE   = RegexPatterns.UNDER_OPEN
+UNDER_CLOSE_RE  = RegexPatterns.UNDER_CLOSE
+ANY_TAG_RE      = RegexPatterns.ANY_TAG
+# Matches whole words including contractions with either straight (‘)
+# or curly (‘) apostrophes: didn’t, didn’t, we’ll, we’ll, I’ve, I’ve.
+WORD_TOKEN_RE   = RegexPatterns.WORD_TOKEN
 
 # Characters visually identical to common Latin letters but from other Unicode
 # blocks — these are genuine OCR misread signals that require no context.
@@ -87,6 +87,21 @@ ILLEGAL_CHARS: set = {
     "❘",  # Light vertical bar ❘
 }
 
+# Non-ASCII characters that are legitimate in subtitles and must not be flagged.
+_ALLOWED_UNICODE: set = {
+    "♪", "♫", "♬", "♭", "♮", "♯", "♩",  # music
+    "‘", "’",  # curly apostrophes
+    "“", "”",  # curly double quotes
+    "—", "–",  # em dash, en dash
+    "…",            # ellipsis
+    "é", "è", "ê", "ë",  # e accents
+    "à", "â", "ä",          # a accents
+    "î", "ï",                  # i accents
+    "ô", "ö",                  # o accents
+    "û", "ü",                  # u accents
+    "ç", "ñ",                  # c-cedilla, n-tilde
+}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Spellchecker singleton (optional — degrades gracefully if not installed)
@@ -108,7 +123,11 @@ def _get_spellchecker():
             try:
                 from spellchecker import SpellChecker
                 _sc_instance = SpellChecker(language='en')
-            except Exception:
+            except ImportError as e:
+                logger.warning(f"spellchecker package not installed: {e}")
+                _sc_instance = False
+            except Exception as e:
+                logger.warning(f"spellchecker failed to load: {e}")
                 _sc_instance = False
     return _sc_instance if _sc_instance else None
 
@@ -123,8 +142,8 @@ def spellchecker_add_words(words):
             # Invalidate cached corrections for added words so they re-resolve
             for w in words:
                 _correction_cache.pop(w.lower(), None)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to add words to spellchecker: {e}")
 
 
 def get_spelling_suggestion(word: str) -> str:
@@ -154,16 +173,16 @@ def load_persistent_dictionary() -> set:
     try:
         if USER_DICT_PATH.exists():
             return set(json.loads(USER_DICT_PATH.read_text(encoding="utf-8")))
-    except Exception:
-        pass
+    except (json.JSONDecodeError, OSError) as e:
+        logger.warning(f"Could not load user dictionary from {USER_DICT_PATH}: {e}")
     return set()
 
 
 def save_persistent_dictionary(words: set) -> None:
     try:
         USER_DICT_PATH.write_text(json.dumps(sorted(words), indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    except OSError as e:
+        logger.warning(f"Could not save user dictionary to {USER_DICT_PATH}: {e}")
 
 
 # ── TextIssue ─────────────────────────────────────────────────────────────────
@@ -239,7 +258,7 @@ def scan_text_issues(
 
     # Pattern A: mid-word colon or semicolon (e.g. "par':" "P':a" "wo:rd")
     # Normal text never has a colon or semicolon embedded inside a word.
-    for m in re.finditer(r'\w+[:\;]\w*', plain):
+    for m in RegexPatterns.MID_WORD_PUNCT.finditer(plain):
         w = m.group()
         # Allow time-like patterns (4:00, 5:30) and ellipsis-like
         if re.match(r'^\d+:\d+$', w):
@@ -252,7 +271,7 @@ def scan_text_issues(
 
     # Pattern B: digit immediately followed by quote/bracket clusters — OCR garbage
     # e.g. 39") or 4"") in dialogue; normal text does not combine these.
-    for m in re.finditer(r'\d+[)\]"]{1,3}', plain):
+    for m in RegexPatterns.DIGIT_BRACKET_CLUSTER.finditer(plain):
         w = m.group()
         # Allow standalone numbers followed by inch-mark: 6" pipe
         if re.fullmatch(r'\d+"', w):
@@ -265,7 +284,7 @@ def scan_text_issues(
 
     # Pattern C: apostrophe-colon sequence mid-word ("par':", "it':", "he':")
     # An apostrophe should never be followed by a colon in valid English.
-    for m in re.finditer(r"\w+'[:\;]\w*", plain):
+    for m in RegexPatterns.APOS_COLON_SEQUENCE.finditer(plain):
         w = m.group()
         issues.append(TextIssue(
             kind="ocr",
@@ -275,7 +294,7 @@ def scan_text_issues(
 
     # Pattern D: bracket/paren after a letter in unlikely positions
     # Catches: "wh)at" or "m)'" — a bracket OCR inserted into dialogue
-    for m in re.finditer(r'[a-zA-Z][)][^a-zA-Z0-9 ]', plain):
+    for m in RegexPatterns.BRACKET_IN_WORD.finditer(plain):
         w = m.group()
         issues.append(TextIssue(
             kind="ocr",
@@ -523,6 +542,7 @@ def parse_srt(path: Path) -> list:
                 "index": int(idx_str) if idx_str.strip().isdigit() else len(events) + 1,
                 "start": start, "end": end, "text": text,
             })
+    logger.debug(f"parse_srt: {len(events)} cues loaded from {path}")
     return events
 
 
@@ -633,7 +653,7 @@ def detect_ffmpeg() -> str:
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                    **_popen_kwargs())
                 if p.returncode == 0: return cand
-        except Exception:
+        except (FileNotFoundError, OSError, subprocess.SubprocessError):
             pass
     return ""
 
@@ -667,7 +687,7 @@ def get_video_info(mkvmerge_exe: str, video_path: str) -> dict:
                     ratio = width / height if height else 0
                     is_fsbs = ratio > 3.0
                     eye_w   = width // 2
-                    return {
+                    info = {
                         "width":      width,
                         "height":     height,
                         "eye_w":      eye_w,
@@ -675,8 +695,10 @@ def get_video_info(mkvmerge_exe: str, video_path: str) -> dict:
                         "ratio":      round(ratio, 2),
                         "duration_s": duration_s,
                     }
-    except Exception:
-        pass
+                    logger.debug(f"get_video_info: {width}x{height}, ratio={round(ratio,2)}, sbs={is_fsbs}")
+                    return info
+    except (json.JSONDecodeError, subprocess.SubprocessError, OSError) as e:
+        logger.warning(f"get_video_info failed for {video_path!r}: {e}")
     return {}
 
 
@@ -743,6 +765,7 @@ def analyse_cue_depths(
     except ImportError:
         has_cv2 = False
 
+    logger.info(f"analyse_cue_depths: {len(events)} cues, video={video!r}")
     results = {}
     total = len(events)
     with tempfile.TemporaryDirectory(prefix="nf3d_") as td:
@@ -766,8 +789,8 @@ def analyse_cue_depths(
                     _extract_frame(ffmpeg, video, t, fp)
                     d, _ = _disparity_in_subtitle_zone(fp)
                     samples.append(d)
-                except Exception:
-                    pass
+                except (RuntimeError, OSError) as e:
+                    logger.debug(f"Frame {j} failed for cue {key} at t={t:.2f}s: {e}")
             if not samples:
                 results[key] = {"depth": 0, "raw": 0.0, "fallback": True}
                 continue
@@ -782,6 +805,7 @@ def analyse_cue_depths(
             results[key] = {"depth": mapped, "raw": round(raw, 3), "fallback": False}
     if progress_cb:
         progress_cb(total, total)
+    logger.info(f"analyse_cue_depths: complete — {len(results)} results")
     return results
 
 def rescan_fallback_cues(
@@ -1047,23 +1071,6 @@ def convert_to_stereo_ass(
 # ASS editor: parse our own format back + targeted line rewrite
 # ─────────────────────────────────────────────────────────────────────────────
 
-import re as _re
-
-_DIALOGUE_RE = _re.compile(
-    r'^(Dialogue:\s*\d+,)'          # prefix  (group 1)
-    r'([^,]+),'                      # start   (group 2)
-    r'([^,]+),'                      # end     (group 3)
-    r'([^,]*),'                      # style   (group 4)
-    r'([^,]*),'                      # name    (group 5)
-    r'([^,]*),'                      # mL      (group 6)
-    r'([^,]*),'                      # mR      (group 7)
-    r'([^,]*),'                      # mV      (group 8)
-    r'([^,]*),'                      # effect  (group 9)
-    r'(.*)$'                         # text    (group 10)
-)
-_CLIP_RE = _re.compile(r'\\clip\(([^)]+)\)')
-_POS_RE  = _re.compile(r'\\pos\(([^,]+),([^)]+)\)')
-_MOVE_RE = _re.compile(r'\\move\(([^,]+),([^,]+),([^,]+),([^,)]+)[^)]*\)')
 
 
 def ass_time_to_ms(t: str) -> int:
@@ -1076,10 +1083,10 @@ def ass_time_to_ms(t: str) -> int:
 
 def _final_pos(text: str):
     """Return (x, y) final position from \\move or \\pos tag, or None."""
-    m = _MOVE_RE.search(text)
+    m = RegexPatterns.MOVE_TAG.search(text)
     if m:
         return int(float(m.group(3))), int(float(m.group(4)))
-    m = _POS_RE.search(text)
+    m = RegexPatterns.POS_TAG.search(text)
     if m:
         return int(float(m.group(1))), int(float(m.group(2)))
     return None
@@ -1112,7 +1119,7 @@ def parse_nf3d_ass(path, eye_w: int) -> tuple:
 
     entries = []
     for i, line in enumerate(raw_lines):
-        m = _DIALOGUE_RE.match(line.rstrip('\r\n'))
+        m = RegexPatterns.DIALOGUE_LINE.match(line.rstrip('\r\n'))
         if not m:
             continue
         entries.append(dict(
@@ -1136,8 +1143,8 @@ def parse_nf3d_ass(path, eye_w: int) -> tuple:
             continue
 
         # Identify left/right by clip — left clip x2 == eye_w
-        c1 = _CLIP_RE.search(e1['text'])
-        c2 = _CLIP_RE.search(e2['text'])
+        c1 = RegexPatterns.CLIP_TAG.search(e1['text'])
+        c2 = RegexPatterns.CLIP_TAG.search(e2['text'])
         try:
             c1_x2 = int(c1.group(1).split(',')[2]) if c1 else 0
         except (IndexError, ValueError):
@@ -1163,7 +1170,7 @@ def parse_nf3d_ass(path, eye_w: int) -> tuple:
             y_centre = int(eye_w * 1080 / 960 * 0.88)  # rough fallback
 
         # Strip tag blocks to recover plain text
-        plain = _re.sub(r'\{[^}]*\}', '', left['text']).strip()
+        plain = re.sub(r'\{[^}]*\}', '', left['text']).strip()
 
         was_ed = (left['name'].strip().lower() == 'edited')
         # Extract any inline style overrides from the text so the edit
@@ -1273,21 +1280,21 @@ def extract_style_overrides_from_text(text: str) -> dict:
     """
     so = {}
     # Find all {...} blocks
-    blocks = _re.findall(r'\{([^}]*)\}', text)
+    blocks = re.findall(r'\{([^}]*)\}', text)
     for block in blocks:
-        m = _re.search(r'\\c(&H[0-9A-Fa-f]+)', block)
+        m = re.search(r'\\c(&H[0-9A-Fa-f]+)', block)
         if m: so['primary_colour'] = m.group(1)
-        m = _re.search(r'\\3c(&H[0-9A-Fa-f]+)', block)
+        m = re.search(r'\\3c(&H[0-9A-Fa-f]+)', block)
         if m: so['outline_colour'] = m.group(1)
-        m = _re.search(r'\\4c(&H[0-9A-Fa-f]+)', block)
+        m = re.search(r'\\4c(&H[0-9A-Fa-f]+)', block)
         if m: so['back_colour'] = m.group(1)
-        m = _re.search(r'\\fn([^\\]+)', block)
+        m = re.search(r'\\fn([^\\]+)', block)
         if m: so['font'] = m.group(1).strip()
-        m = _re.search(r'\\fs(\d+)', block)
+        m = re.search(r'\\fs(\d+)', block)
         if m: so['font_size'] = int(m.group(1))
-        m = _re.search(r'\\bord([0-9.]+)', block)
+        m = re.search(r'\\bord([0-9.]+)', block)
         if m: so['outline'] = float(m.group(1))
-        m = _re.search(r'\\shad([0-9.]+)', block)
+        m = re.search(r'\\shad([0-9.]+)', block)
         if m: so['shadow'] = float(m.group(1))
         if '\\b1' in block: so['bold'] = True
         if '\\b0' in block: so['bold'] = False

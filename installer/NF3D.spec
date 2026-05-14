@@ -20,10 +20,14 @@ a = Analysis(
     pathex=[str(app_dir)],
     binaries=[],
     datas=[
-        (str(app_dir / 'nf3d_core.py'),   '.'),
-        (str(app_dir / 'nf3d_icon.ico'),   '.'),
-        (str(app_dir / 'nf3d_logo.png'),   '.'),
-        (str(app_dir / 'setup_check.py'),  '.'),
+        (str(app_dir / 'nf3d_core.py'),        '.'),
+        (str(app_dir / 'nf3d_gui.py'),         '.'),
+        (str(app_dir / 'setup_check.py'),       '.'),
+        (str(app_dir / 'config.py'),            '.'),
+        (str(app_dir / 'logging_config.py'),    '.'),
+        (str(app_dir / 'exception_handlers.py'),'.'),
+        (str(app_dir / 'nf3d_icon.ico'),        '.'),
+        (str(app_dir / 'nf3d_logo.png'),        '.'),
     ] + ([(_sc_resources, 'spellchecker/resources')] if _sc_resources else []),
     hiddenimports=[
         'PIL._tkinter_finder',

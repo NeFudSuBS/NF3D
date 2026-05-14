@@ -9,6 +9,15 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import tkinter as tk
+from pathlib import Path
+from tkinter import messagebox, ttk
+
+from logging_config import get_logger
+
+logger = get_logger(__name__)
+
 
 def _popen_kwargs():
     if sys.platform != "win32":
@@ -17,10 +26,6 @@ def _popen_kwargs():
     si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
     si.wShowWindow = 0  # SW_HIDE
     return {"creationflags": subprocess.CREATE_NO_WINDOW, "startupinfo": si}
-import threading
-import tkinter as tk
-from pathlib import Path
-from tkinter import messagebox, ttk
 
 # ── Dependency definitions ────────────────────────────────────────────────────
 
@@ -80,8 +85,8 @@ def check_tool(key: str) -> str:
         from nf3d_gui import autodetect_tools
         tools = autodetect_tools()
         return tools.get(_key_map.get(key, key), "")
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug(f"check_tool autodetect_tools unavailable: {e}")
     # Fallback: check known Windows absolute paths directly
     _abs_fallback = {
         "mkvtoolnix":   [r"C:\Program Files\MKVToolNix\mkvmerge.exe",
@@ -100,7 +105,7 @@ def check_tool(key: str) -> str:
         r = subprocess.run([cmd, "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                            **_popen_kwargs())
         return cmd if r.returncode == 0 else ""
-    except Exception:
+    except (FileNotFoundError, OSError):
         return ""
 
 def _se_version_warning(se_path: str) -> str:
@@ -117,7 +122,7 @@ def _se_version_warning(se_path: str) -> str:
             ver = raw.replace(b"\x00", b"").decode("ascii", errors="ignore").strip()
             if ver.startswith("5.") and "beta" in ver.lower():
                 return f" — WARNING: {ver} is a beta. SE 5.x beta ignores /convert for PGS OCR. Install SE 4.x stable."
-    except Exception:
+    except (OSError, ValueError, UnicodeDecodeError):
         pass
     return ""
 
@@ -173,7 +178,7 @@ CONFIG_PATH = Path.home() / "nf3d_config.json"
 def _read_config() -> dict:
     try:
         return json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    except Exception:
+    except (OSError, json.JSONDecodeError):
         return {}
 
 def _write_config(cfg: dict):
@@ -181,8 +186,8 @@ def _write_config(cfg: dict):
         existing = _read_config()
         existing.update(cfg)
         CONFIG_PATH.write_text(json.dumps(existing, indent=2), encoding="utf-8")
-    except Exception:
-        pass
+    except OSError as e:
+        logger.warning(f"Could not write config to {CONFIG_PATH}: {e}")
 
 
 class SetupWindow(tk.Tk):
@@ -217,7 +222,7 @@ class SetupWindow(tk.Tk):
                 img.thumbnail((52, 52), Image.LANCZOS)
                 self._logo_imgtk = ImageTk.PhotoImage(img)
                 tk.Label(hdr, image=self._logo_imgtk, bg="#111827").pack(side="left", padx=12, pady=8)
-        except Exception:
+        except (OSError, ImportError):
             pass
         tk.Label(hdr, text="NF3D Setup Check", font=("Arial", 16, "bold"),
                  fg="white", bg="#111827").pack(side="left", pady=16)
@@ -356,7 +361,7 @@ class SetupWindow(tk.Tk):
                                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                    **_popen_kwargs())
                 self._has_winget = (r.returncode == 0)
-            except Exception:
+            except (FileNotFoundError, OSError):
                 self._has_winget = False
             lbl = "Install via winget" if self._has_winget else "Download page ↗"
             for key, *_ in TOOL_DEPS:
@@ -420,7 +425,7 @@ class SetupWindow(tk.Tk):
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                                **_popen_kwargs())
             has_winget = (r.returncode == 0)
-        except Exception:
+        except (FileNotFoundError, OSError):
             has_winget = False
 
         parts = install_cmd.split()
@@ -461,8 +466,8 @@ class SetupWindow(tk.Tk):
             ws = str(Path.home() / "NF3D")
         try:
             os.makedirs(ws, exist_ok=True)
-        except Exception:
-            pass
+        except OSError as e:
+            logger.warning(f"Could not create workspace directory {ws!r}: {e}")
         _write_config({"workspace": ws})
         self._log(f"Workspace set to: {ws}")
 
@@ -477,8 +482,8 @@ class SetupWindow(tk.Tk):
         self._save_workspace()
         try:
             _setup_ok_path().write_text("ok", encoding="utf-8")
-        except Exception:
-            pass
+        except OSError as e:
+            logger.warning(f"Could not write setup flag: {e}")
         self.destroy()
         # In frozen mode (installer or first-run), the caller handles what happens next.
         # In dev/script mode, spawn the main app.
