@@ -5,7 +5,7 @@
 ; (run from the 'new claude' parent directory)
 
 #define MyAppName      "NF3D"
-#define MyAppVersion   "1.1"
+#define MyAppVersion   "1.2"
 #define MyAppPublisher "NF3D"
 #define MyAppURL       ""
 #define MyAppExeName   "NF3D.exe"

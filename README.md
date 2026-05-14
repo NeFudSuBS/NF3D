@@ -6,7 +6,7 @@ Open an SBS MKV, load any subtitle (embedded track or external file), and NF3D a
 
 ## Download
 
-**[⬇ Download NF3D_Setup_1.1.exe](https://github.com/NeFudSuBS/NF3D/releases/latest/download/NF3D_Setup_1.1.exe)**
+**[⬇ Download NF3D_Setup_1.2.exe](https://github.com/NeFudSuBS/NF3D/releases/latest/download/NF3D_Setup_1.2.exe)**
 
 Windows 10 / 11 · 64-bit
 
