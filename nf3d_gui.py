@@ -33,8 +33,8 @@ from nf3d_core import (
     analyse_cue_depths, rescan_fallback_cues, convert_to_stereo_ass, deoverlap_events,
     detect_ffmpeg, effective_params, get_video_info,
     load_persistent_dictionary, save_persistent_dictionary,
-    parse_srt, scan_text_issues, spellchecker_available, strip_markup_for_preview,
-    srt_time_to_ffmpeg,
+    ms_to_srt_time, parse_srt, scan_text_issues, spellchecker_available,
+    strip_markup_for_preview, srt_time_to_ffmpeg, srt_time_to_ms,
     # ASS editor
     parse_nf3d_ass, rebuild_ass_cue_lines, save_nf3d_ass,
     extract_style_overrides_from_text,
@@ -1737,6 +1737,7 @@ class App(tk.Tk):
         self.var_caps_depth      = I(value=cfg.get("caps_depth",         dd["caps_depth"]))
         self.var_italics_depth   = I(value=cfg.get("italics_depth",      dd["italics_depth"]))
         self.var_deoverlap       = B(value=cfg.get("deoverlap", True))
+        self.var_sub_offset_ms   = I(value=cfg.get("sub_offset_ms", 0))
 
         # Emergence
         self.var_emerge_in_ms    = I(value=cfg.get("emerge_in_ms",100))
@@ -1850,6 +1851,7 @@ class App(tk.Tk):
             "output_bias": self.var_output_bias.get(),
             "output_scale": self.var_output_scale.get(),
             "deoverlap":           self.var_deoverlap.get(),
+            "sub_offset_ms":       self.var_sub_offset_ms.get(),
             "output_mode":         self.var_output_mode.get(),
             "save_depth_export":   self.var_save_depth_export.get(),
             "express_review":      self.var_express_review.get(),
@@ -1936,16 +1938,32 @@ class App(tk.Tk):
         ttk.Button(lf, text="Refresh", command=self._refresh_tracks).grid(row=2, column=2, padx=8, pady=4)
 
         lbl_ext = ttk.Label(lf, text="External subtitle")
-        lbl_ext.grid(row=3, column=0, sticky="w", padx=8, pady=4)
+        lbl_ext.grid(row=3, column=0, sticky="nw", padx=8, pady=6)
         tip(lbl_ext,
             "Optional: use a subtitle file from disk instead of extracting from the MKV.\n"
             "Supported formats: SRT (used as-is), SUP/PGS and IDX+SUB (OCR'd via\n"
             "Subtitle Edit), ASS/SSA (converted to SRT via Subtitle Edit).\n"
             "Leave blank to use the embedded track selected above.")
-        ttk.Entry(lf, textvariable=self.var_external_sub).grid(row=3, column=1, sticky="we", padx=8, pady=4)
-        ttk.Button(lf, text="Browse", command=lambda: self._browse_file(
+        _ext_frame = ttk.Frame(lf)
+        _ext_frame.grid(row=3, column=1, columnspan=2, sticky="we", padx=8, pady=2)
+        _ext_frame.columnconfigure(0, weight=1)
+        _ext_pick = ttk.Frame(_ext_frame)
+        _ext_pick.grid(row=0, column=0, sticky="we")
+        _ext_pick.columnconfigure(0, weight=1)
+        ttk.Entry(_ext_pick, textvariable=self.var_external_sub).grid(
+            row=0, column=0, sticky="we", padx=(0, 4))
+        ttk.Button(_ext_pick, text="Browse", command=lambda: self._browse_file(
             self.var_external_sub, [("Subtitles","*.srt *.sup *.idx *.ass *.ssa"),("All","*.*")])).grid(
-            row=3, column=2, padx=8, pady=4)
+            row=0, column=1)
+        _ext_note = ttk.Frame(_ext_frame)
+        _ext_note.grid(row=1, column=0, sticky="we", pady=(3, 2))
+        ttk.Label(_ext_note,
+                  text="If from a different release, check sync first.  Timing offset (ms):",
+                  font=("", 8), foreground="#888").pack(side="left")
+        ttk.Spinbox(_ext_note, from_=-120000, to=120000, increment=500,
+                    textvariable=self.var_sub_offset_ms, width=8).pack(side="left", padx=4)
+        ttk.Label(_ext_note, text="(0 = no shift)",
+                  font=("", 8), foreground="#aaa").pack(side="left")
 
         ttk.Label(lf, text="Workspace").grid(row=4, column=0, sticky="w", padx=8, pady=4)
         ttk.Entry(lf, textvariable=self.var_workspace).grid(row=4, column=1, sticky="we", padx=8, pady=4)
@@ -4447,6 +4465,18 @@ class App(tk.Tk):
         IssueReviewWindow(self, self.prepared_srt, self.session_dict,
                           self.persistent_dict, app=self)
 
+    def _apply_srt_offset(self, srt_path: str, offset_ms: int, out_dir: str) -> str:
+        """Shift all cue timings in srt_path by offset_ms, write to out_dir, return new path."""
+        events = parse_srt(Path(srt_path))
+        out = os.path.join(out_dir, "sub_shifted.srt")
+        with open(out, "w", encoding="utf-8") as f:
+            for ev in events:
+                s = ms_to_srt_time(srt_time_to_ms(ev["start"]) + offset_ms)
+                e = ms_to_srt_time(srt_time_to_ms(ev["end"])   + offset_ms)
+                f.write(f"{ev['index']}\n{s} --> {e}\n{ev['text']}\n\n")
+        self._log(f"Timing offset {offset_ms:+d} ms applied → sub_shifted.srt")
+        return out
+
     def _prepare_impl(self) -> str:
         mkv = self.var_mkv.get().strip()
         ext = self.var_external_sub.get().strip()
@@ -4457,42 +4487,51 @@ class App(tk.Tk):
         if ext and os.path.isfile(ext):
             ext_l = ext.lower()
             if ext_l.endswith(".srt"):
-                return ext
-            se_path = self.var_subtitleedit.get().strip()
-            if not se_path or not os.path.isfile(se_path):
-                raise RuntimeError(
-                    "Subtitle Edit not found. Set its path in Advanced > Tools & paths.")
-            return self._run_se_convert(se_path, ext, ocr)
-        if not mkv or not os.path.isfile(mkv):
-            raise RuntimeError("Choose a valid MKV or provide an external subtitle.")
-        if not mkv.lower().endswith(".mkv"):
-            raise RuntimeError("Embedded extraction supports MKV only.")
-        tr = self._track_by_label.get(self.var_track.get())
-        if not tr: raise RuntimeError("Select a valid subtitle track.")
-        codec = (tr["codec_id"] or "").upper(); tid = tr["id"]
-        mkvx  = self.var_mkvextract.get().strip() or "mkvextract"
-        se    = self.var_subtitleedit.get().strip()
-        if "PGS" in codec or "VOBSUB" in codec or "HDMV" in codec:
-            sup = os.path.join(demux, f"sub_{tid}.sup")
-            rc, out = self._run_cmd([mkvx, "tracks", mkv, f"{tid}:{sup}"])
-            if rc != 0 or not os.path.isfile(sup):
-                raise RuntimeError(f"mkvextract failed (rc={rc}):\n{out[-800:]}")
-            if not se or not os.path.isfile(se):
-                raise RuntimeError(
-                    "Subtitle Edit not found. Set its path in Advanced > Tools & paths.")
-            return self._run_se_convert(se, sup, ocr)
-        if "UTF8" in codec or "SUBRIP" in codec or "S_TEXT" in codec:
-            srt = os.path.join(ocr, f"sub_{tid}.srt")
-            rc, out = self._run_cmd([mkvx,"tracks",mkv,f"{tid}:{srt}"])
-            if rc != 0 or not os.path.isfile(srt): raise RuntimeError(f"mkvextract failed (rc={rc}):\n{out[-800:]}")
-            return srt
-        if "ASS" in codec or "SSA" in codec or "SUBSTATIONALPHA" in codec:
-            ext2 = ".ssa" if "SSA" in codec else ".ass"
-            af   = os.path.join(demux, f"sub_{tid}{ext2}")
-            rc, out = self._run_cmd([mkvx,"tracks",mkv,f"{tid}:{af}"])
-            if rc != 0 or not os.path.isfile(af): raise RuntimeError(f"mkvextract failed (rc={rc}):\n{out[-800:]}")
-            return self._run_se_convert(se, af, ocr)
-        raise RuntimeError(f"Unsupported codec: {codec}")
+                result_srt = ext
+            else:
+                se_path = self.var_subtitleedit.get().strip()
+                if not se_path or not os.path.isfile(se_path):
+                    raise RuntimeError(
+                        "Subtitle Edit not found. Set its path in Advanced > Tools & paths.")
+                result_srt = self._run_se_convert(se_path, ext, ocr)
+        else:
+            if not mkv or not os.path.isfile(mkv):
+                raise RuntimeError("Choose a valid MKV or provide an external subtitle.")
+            if not mkv.lower().endswith(".mkv"):
+                raise RuntimeError("Embedded extraction supports MKV only.")
+            tr = self._track_by_label.get(self.var_track.get())
+            if not tr: raise RuntimeError("Select a valid subtitle track.")
+            codec = (tr["codec_id"] or "").upper(); tid = tr["id"]
+            mkvx  = self.var_mkvextract.get().strip() or "mkvextract"
+            se    = self.var_subtitleedit.get().strip()
+            if "PGS" in codec or "VOBSUB" in codec or "HDMV" in codec:
+                sup = os.path.join(demux, f"sub_{tid}.sup")
+                rc, out = self._run_cmd([mkvx, "tracks", mkv, f"{tid}:{sup}"])
+                if rc != 0 or not os.path.isfile(sup):
+                    raise RuntimeError(f"mkvextract failed (rc={rc}):\n{out[-800:]}")
+                if not se or not os.path.isfile(se):
+                    raise RuntimeError(
+                        "Subtitle Edit not found. Set its path in Advanced > Tools & paths.")
+                result_srt = self._run_se_convert(se, sup, ocr)
+            elif "UTF8" in codec or "SUBRIP" in codec or "S_TEXT" in codec:
+                srt = os.path.join(ocr, f"sub_{tid}.srt")
+                rc, out = self._run_cmd([mkvx,"tracks",mkv,f"{tid}:{srt}"])
+                if rc != 0 or not os.path.isfile(srt):
+                    raise RuntimeError(f"mkvextract failed (rc={rc}):\n{out[-800:]}")
+                result_srt = srt
+            elif "ASS" in codec or "SSA" in codec or "SUBSTATIONALPHA" in codec:
+                ext2 = ".ssa" if "SSA" in codec else ".ass"
+                af   = os.path.join(demux, f"sub_{tid}{ext2}")
+                rc, out = self._run_cmd([mkvx,"tracks",mkv,f"{tid}:{af}"])
+                if rc != 0 or not os.path.isfile(af):
+                    raise RuntimeError(f"mkvextract failed (rc={rc}):\n{out[-800:]}")
+                result_srt = self._run_se_convert(se, af, ocr)
+            else:
+                raise RuntimeError(f"Unsupported codec: {codec}")
+        offset_ms = self.var_sub_offset_ms.get()
+        if offset_ms != 0:
+            result_srt = self._apply_srt_offset(result_srt, offset_ms, ocr)
+        return result_srt
 
     def _newest_srt(self, folder: str) -> str:
         srts = [os.path.join(folder, f) for f in os.listdir(folder)
