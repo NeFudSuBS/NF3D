@@ -132,6 +132,11 @@ def _get_spellchecker():
     return _sc_instance if _sc_instance else None
 
 
+def spellchecker_available() -> bool:
+    """Return True if the spellchecker loaded successfully."""
+    return _get_spellchecker() is not None
+
+
 def spellchecker_add_words(words):
     """Add words to the live spellchecker so they are not flagged in future scans."""
     global _correction_cache

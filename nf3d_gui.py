@@ -33,7 +33,7 @@ from nf3d_core import (
     analyse_cue_depths, rescan_fallback_cues, convert_to_stereo_ass, deoverlap_events,
     detect_ffmpeg, effective_params, get_video_info,
     load_persistent_dictionary, save_persistent_dictionary,
-    parse_srt, scan_text_issues, strip_markup_for_preview,
+    parse_srt, scan_text_issues, spellchecker_available, strip_markup_for_preview,
     srt_time_to_ffmpeg,
     # ASS editor
     parse_nf3d_ass, rebuild_ass_cue_lines, save_nf3d_ass,
@@ -935,6 +935,9 @@ class IssueReviewWindow(tk.Toplevel):
 
         hdr = ttk.Frame(lf); hdr.grid(row=0, column=0, columnspan=2, sticky="we", pady=(0,3))
         ttk.Label(hdr, text="Flagged cues", font=("",9,"bold")).pack(side="left")
+        if not spellchecker_available():
+            ttk.Label(hdr, text="(spell check unavailable — pip install pyspellchecker)",
+                      font=("",8), foreground="#888").pack(side="left", padx=8)
         ttk.Checkbutton(hdr, text="Show all cues",
                         variable=self.var_show_all,
                         command=self._on_show_all_toggle).pack(side="right")
@@ -1733,6 +1736,7 @@ class App(tk.Tk):
         self.var_base_depth      = I(value=cfg.get("base_depth",         dd["base_depth"]))
         self.var_caps_depth      = I(value=cfg.get("caps_depth",         dd["caps_depth"]))
         self.var_italics_depth   = I(value=cfg.get("italics_depth",      dd["italics_depth"]))
+        self.var_deoverlap       = B(value=cfg.get("deoverlap", True))
 
         # Emergence
         self.var_emerge_in_ms    = I(value=cfg.get("emerge_in_ms",100))
@@ -1845,6 +1849,7 @@ class App(tk.Tk):
             "out_min": self.var_out_min.get(), "out_max": self.var_out_max.get(),
             "output_bias": self.var_output_bias.get(),
             "output_scale": self.var_output_scale.get(),
+            "deoverlap":           self.var_deoverlap.get(),
             "output_mode":         self.var_output_mode.get(),
             "save_depth_export":   self.var_save_depth_export.get(),
             "express_review":      self.var_express_review.get(),
@@ -4158,6 +4163,14 @@ class App(tk.Tk):
                    command=self._reset_depth).grid(
             row=11, column=0, columnspan=2, sticky="w", padx=8, pady=12)
 
+        cb_deov = ttk.Checkbutton(p, text="Auto-correct overlapping cues",
+                                   variable=self.var_deoverlap)
+        cb_deov.grid(row=12, column=0, columnspan=4, sticky="w", padx=8, pady=(0,8))
+        tip(cb_deov,
+            "When ticked, cues whose start time overlaps the previous cue's end time\n"
+            "are automatically shortened before depth analysis and export.\n"
+            "Untick if you want to handle overlapping timing yourself in the Edit tab.")
+
     def _build_adv_fonts(self, p):
         p.columnconfigure(0, weight=1); p.columnconfigure(1, weight=1)
 
@@ -4628,7 +4641,7 @@ class App(tk.Tk):
         if not ffmpeg:
             messagebox.showwarning("No ffmpeg", "ffmpeg not found."); return
 
-        events = deoverlap_events(parse_srt(Path(self.prepared_srt)))
+        events = self._deoverlap_events(parse_srt(Path(self.prepared_srt)))
         # Count exactly how many need rescanning before we start
         n_missing = sum(
             1 for ev in events
@@ -4678,6 +4691,17 @@ class App(tk.Tk):
             self._log(f"Rescan error: {e}")
             self.after(0, lambda: self.btn_rescan_missing.config(state="normal"))
 
+    def _deoverlap_events(self, events: list) -> list:
+        """Conditionally deoverlap events per user setting, logging any changes."""
+        if not self.var_deoverlap.get():
+            return events
+        fixed = deoverlap_events(events)
+        n = sum(1 for a, b in zip(events, fixed) if a["end"] != b["end"])
+        if n:
+            self._log(f"Auto-corrected {n} overlapping cue(s) — "
+                      "disable in Advanced > Depth Analysis if unwanted.")
+        return fixed
+
     def _analyse_threaded(self):
         threading.Thread(target=self._analyse, daemon=True).start()
 
@@ -4690,7 +4714,7 @@ class App(tk.Tk):
             messagebox.showwarning("No video","Choose a valid video file."); return
         if not ffmpeg:
             messagebox.showwarning("No ffmpeg","ffmpeg not found."); return
-        events = deoverlap_events(parse_srt(Path(self.prepared_srt)))
+        events = self._deoverlap_events(parse_srt(Path(self.prepared_srt)))
         total  = len(events)
         self._set_step("depth", "running", f"0 / {total}\u2026")
         self._log(f"Depth analysis: starting {total} cues\u2026")
@@ -5140,15 +5164,24 @@ class App(tk.Tk):
         self.project = proj
         self._last_project_path = Path(p)
 
-        # Restore video path and auto-refresh dimensions from MKV if available
+        # Restore video path only if the file still exists at the saved location.
+        # If it has been moved or renamed, keep whatever MKV the user already has
+        # loaded so that loading depth data doesn't clobber a manually-set path.
         if proj.video_path:
-            self.var_mkv.set(proj.video_path)
-            mkvmerge = self.var_mkvmerge.get().strip() or "mkvmerge"
-            info = get_video_info(mkvmerge, proj.video_path)
-            if info:
-                self.var_eye_w.set(info["eye_w"])
-                self.var_h.set(info["height"])
-            self._set_step("file", "done", Path(proj.video_path).name)
+            if os.path.isfile(proj.video_path):
+                self.var_mkv.set(proj.video_path)
+                mkvmerge = self.var_mkvmerge.get().strip() or "mkvmerge"
+                info = get_video_info(mkvmerge, proj.video_path)
+                if info:
+                    self.var_eye_w.set(info["eye_w"])
+                    self.var_h.set(info["height"])
+                self._set_step("file", "done", Path(proj.video_path).name)
+            else:
+                self._log(f"Saved MKV not found: {proj.video_path}")
+                current = self.var_mkv.get().strip()
+                if current and os.path.isfile(current):
+                    self._log(f"Keeping current MKV: {Path(current).name}")
+                    self._set_step("file", "done", Path(current).name)
 
         # Restore subtitle path.
         # Priority: (1) co-located SRT (same stem as JSON, same folder)
@@ -5234,7 +5267,7 @@ class App(tk.Tk):
             if not ffmpeg:
                 raise RuntimeError("ffmpeg not found.")
 
-            events = deoverlap_events(parse_srt(Path(self.prepared_srt)))
+            events = self._deoverlap_events(parse_srt(Path(self.prepared_srt)))
             total  = len(events)
             self._set_step("depth", "running", f"0 / {total}…")
             self._log(f"Express: depth analysis — {total} cues…")
