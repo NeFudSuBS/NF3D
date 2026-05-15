@@ -4295,6 +4295,7 @@ class App(tk.Tk):
         if not p: return
         self.var_mkv.set(p)
         self.var_external_sub.set("")   # clear stale external subtitle
+        self.var_sub_offset_ms.set(0)  # offset is subtitle-specific, reset for new film
         # Reset all steps — new video, fresh start
         for _k in ("prepare", "depth", "export"):
             self._set_step(_k, "idle", "")
