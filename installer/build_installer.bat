@@ -8,7 +8,7 @@ REM    pip install pyinstaller
 REM    Inno Setup 6  →  https://jrsoftware.org/isinfo.php
 REM
 REM  Run this script from any directory — it self-locates.
-REM  Output: ..\installer_output\NF3D_Setup_1.2.exe
+REM  Output: ..\installer_output\NF3D_Setup_1.3.exe
 REM ─────────────────────────────────────────────────────────────────────────────
 
 set "INSTALLER_DIR=%~dp0"
@@ -107,7 +107,7 @@ if %ERRORLEVEL% neq 0 (
 echo.
 echo ============================================================
 echo   Done!
-echo   Installer: %APP_DIR%\installer_output\NF3D_Setup_1.2.exe
+echo   Installer: %APP_DIR%\installer_output\NF3D_Setup_1.3.exe
 echo ============================================================
 echo.
 
