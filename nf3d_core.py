@@ -7,6 +7,7 @@ and OCR issue detection live here.  The GUI imports these directly.
 """
 from __future__ import annotations
 
+import bisect
 import dataclasses
 import html
 import json
@@ -861,6 +862,72 @@ def rescan_fallback_cues(
     return merged
 
 
+def interpolate_fallback_depths(
+    depth_map: dict, events: list, n_neighbours: int = 5
+) -> tuple:
+    """
+    Replace fallback depth entries with time-weighted estimates derived from
+    the nearest successful neighbours (up to n_neighbours on each side).
+
+    Only confirmed measured entries (fallback=False, interpolated not set)
+    are used as sources, so consecutive failures never seed each other.
+    Start/end-of-file cases work naturally — the available neighbours on the
+    one side carry all the weight.
+
+    Returns (new_depth_map, n_interpolated).
+    """
+    # Collect successful cues as (time_ms, depth), sorted by time
+    successful: list[tuple[int, float]] = []
+    for ev in events:
+        key = str(ev["index"])
+        entry = depth_map.get(key, {})
+        if entry and not entry.get("fallback", True) and not entry.get("interpolated"):
+            successful.append((srt_time_to_ms(ev["start"]), float(entry["depth"])))
+    successful.sort()
+
+    if not successful:
+        return dict(depth_map), 0
+
+    times = [s[0] for s in successful]
+
+    result = dict(depth_map)
+    n_interpolated = 0
+
+    for ev in events:
+        key = str(ev["index"])
+        entry = depth_map.get(key, {})
+        if not entry or not entry.get("fallback", True):
+            continue
+
+        t_ms = srt_time_to_ms(ev["start"])
+        pos  = bisect.bisect_left(times, t_ms)
+
+        # Gather up to n_neighbours from each side
+        neighbours = (successful[max(0, pos - n_neighbours) : pos] +
+                      successful[pos : pos + n_neighbours])
+        if not neighbours:
+            continue
+
+        total_w = total_wd = 0.0
+        for (t_n, d_n) in neighbours:
+            dist = abs(t_n - t_ms)
+            if dist == 0:
+                total_w, total_wd = 1.0, d_n
+                break
+            w = 1.0 / dist
+            total_w  += w
+            total_wd += w * d_n
+
+        if total_w > 0:
+            result[key] = {
+                "depth":        int(round(total_wd / total_w)),
+                "raw":          entry.get("raw", 0.0),
+                "fallback":     False,
+                "interpolated": True,
+            }
+            n_interpolated += 1
+
+    return result, n_interpolated
 
 
 # ─────────────────────────────────────────────────────────────────────────────

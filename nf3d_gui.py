@@ -30,7 +30,8 @@ from tkinter import colorchooser, filedialog, font as tkfont, messagebox, ttk
 
 from nf3d_core import (
     CueOverride, Project, TextIssue,
-    analyse_cue_depths, rescan_fallback_cues, convert_to_stereo_ass, deoverlap_events,
+    analyse_cue_depths, interpolate_fallback_depths,
+    rescan_fallback_cues, convert_to_stereo_ass, deoverlap_events,
     detect_ffmpeg, effective_params, get_video_info,
     load_persistent_dictionary, save_persistent_dictionary,
     ms_to_srt_time, parse_srt, scan_text_issues, spellchecker_available,
@@ -4722,6 +4723,15 @@ class App(tk.Tk):
             self.project.depth_map = updated_map
             n_good = sum(1 for v in updated_map.values() if not v.get("fallback"))
             n_still_missing = sum(1 for v in updated_map.values() if v.get("fallback"))
+            if n_still_missing:
+                interp_map, n_interp = interpolate_fallback_depths(
+                    updated_map, events)
+                if n_interp:
+                    self.project.depth_map = interp_map
+                    self._log(f"Depth interpolation: estimated {n_interp} "
+                              f"remaining fallback cue(s) from neighbours.")
+                    n_good += n_interp
+                    n_still_missing -= n_interp
             self._set_step("depth", "done", f"{n_good}/{total_events} cues")
             self._log(f"Rescan complete: {n_good}/{total_events} cues now have "
                       f"depth data. {n_still_missing} still fallback.")
@@ -4774,6 +4784,14 @@ class App(tk.Tk):
                 output_scale=self.var_output_scale.get(),
                 progress_cb=progress)
             n = sum(1 for v in self.project.depth_map.values() if not v.get("fallback"))
+            if n < total:
+                interp_map, n_interp = interpolate_fallback_depths(
+                    self.project.depth_map, events)
+                if n_interp:
+                    self.project.depth_map = interp_map
+                    self._log(f"Depth interpolation: estimated {n_interp} "
+                              f"fallback cue(s) from neighbours.")
+                    n += n_interp
             self._set_step("depth", "done", f"{n}/{total} cues")
             self._log(f"Depth analysis complete: {n}/{total} cues analysed.")
             self._refresh_ass_list() if self._ass_cues else None
