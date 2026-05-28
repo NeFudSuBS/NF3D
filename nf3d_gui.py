@@ -4506,7 +4506,17 @@ class App(tk.Tk):
             codec = (tr["codec_id"] or "").upper(); tid = tr["id"]
             mkvx  = self.var_mkvextract.get().strip() or "mkvextract"
             se    = self.var_subtitleedit.get().strip()
-            if "PGS" in codec or "VOBSUB" in codec or "HDMV" in codec:
+            if "VOBSUB" in codec:
+                idx = os.path.join(demux, f"sub_{tid}.idx")
+                sub = os.path.join(demux, f"sub_{tid}.sub")
+                rc, out = self._run_cmd([mkvx, "tracks", mkv, f"{tid}:{idx}"])
+                if rc != 0 or not os.path.isfile(sub):
+                    raise RuntimeError(f"mkvextract failed (rc={rc}):\n{out[-800:]}")
+                if not se or not os.path.isfile(se):
+                    raise RuntimeError(
+                        "Subtitle Edit not found. Set its path in Advanced > Tools & paths.")
+                result_srt = self._run_se_convert(se, sub, ocr)
+            elif "PGS" in codec or "HDMV" in codec:
                 sup = os.path.join(demux, f"sub_{tid}.sup")
                 rc, out = self._run_cmd([mkvx, "tracks", mkv, f"{tid}:{sup}"])
                 if rc != 0 or not os.path.isfile(sup):
@@ -4552,14 +4562,21 @@ class App(tk.Tk):
             rc, out = self._run_cmd([se_path] + se_args)
             if rc != 0:
                 raise RuntimeError(f"Subtitle Edit failed:\n{out}")
-        if not os.path.isfile(expected):
-            raise RuntimeError(
-                f"Subtitle Edit produced no SRT output (exit {rc}).\n\n"
-                "SE 5.x beta is known to ignore /convert for PGS/VobSub files.\n"
-                "Install SE 4.x stable from:\n"
-                "  https://github.com/SubtitleEdit/subtitleedit/releases\n"
-                "(choose the latest tag without 'beta' in the name)")
-        return expected
+        if os.path.isfile(expected):
+            return expected
+        # SE sometimes ignores /outputfolder and saves alongside the source file
+        alt = os.path.join(str(Path(input_file).parent), Path(input_file).stem + ".srt")
+        if os.path.isfile(alt):
+            import shutil
+            shutil.move(alt, expected)
+            self._log("Note: SE saved to source folder; moved to ocr folder.")
+            return expected
+        raise RuntimeError(
+            f"Subtitle Edit produced no SRT output (exit {rc}).\n\n"
+            "SE 5.x beta is known to ignore /convert for PGS/VobSub files.\n"
+            "Install SE 4.x stable from:\n"
+            "  https://github.com/SubtitleEdit/subtitleedit/releases\n"
+            "(choose the latest tag without 'beta' in the name)")
 
     def _se_run_win32(self, se_path: str, se_args: list) -> int:
         """Launch SE on Windows; suppress its window via ctypes and enforce a timeout."""
